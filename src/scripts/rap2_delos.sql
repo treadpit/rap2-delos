@@ -35,6 +35,8 @@ CREATE TABLE `interfaces` (
   `creatorId` bigint(11) unsigned DEFAULT NULL COMMENT '-',
   `lockerId` bigint(11) unsigned DEFAULT NULL COMMENT '-',
   `repositoryId` bigint(11) unsigned DEFAULT NULL COMMENT '-',
+  `bodyOption` varchar(256) unsigned DEFAULT NULL COMMENT '-',
+  `requestParamsType` varchar(256) unsigned DEFAULT NULL COMMENT '-',
   PRIMARY KEY (`id`),
   KEY `idx_moduleId` (`moduleId`),
   KEY `idx_creatorId` (`creatorId`),

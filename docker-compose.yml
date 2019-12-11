@@ -3,18 +3,29 @@
 # chibing.fy@alibaba-inc.com
 
 version: "3"
-
 services:
   # frontend
   dolores:
     image: rapteam/rap2-dolores:latest
+    container_name: rap2_dolores
     ports:
       #冒号前可以自定义前端端口号，冒号后不要动
       - 3000:38081
-
+  nginx:
+    image: drfu/jdfe-delos-nginx:latest
+    container_name: rap2_nginx
+    networks:
+      - default
+    ports:
+     - 80:80
+    depends_on:
+     - delos
   # backend
   delos:
-    image: rapteam/rap2-delos:latest
+    image: drfu/jdfe-delos:0.2
+    container_name: rap2_delos
+    networks:
+      - default
     ports:
       # 这里的配置不要改哦
       - 38080:38080
@@ -46,13 +57,17 @@ services:
 
   redis:
     image: redis:4
+    container_name: rap2_redis
+    # ports:
+    #   - 6379:6379
 
   # disable this if you have your own mysql
   mysql:
     image: mysql:5.7
-    # expose 33306 to client (navicat)
-    #ports:
-    #   - 33306:3306
+    container_name: rap2_mysql
+    # expose 3306 to client (navicat)
+    # ports:
+    #   - 3306:3306
     volumes:
       # change './docker/mysql/volume' to your own path
       # WARNING: without this line, your data will be lost.

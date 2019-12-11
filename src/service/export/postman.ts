@@ -2,6 +2,7 @@ import { PostmanCollection, Folder, Item } from "../../types/postman"
 import { Repository, Interface, Module, Property } from "../../models"
 import * as url from 'url'
 import { REQUEST_PARAMS_TYPE } from "../../models/bo/property"
+import tree from '../../routes/utils/tree'
 import UrlUtils from "../../routes/utils/url"
 
 const SCHEMA_V_2_1_0 = 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json'
@@ -52,7 +53,7 @@ export default class PostmanService {
           request: {
             method: itf.method as any,
             header: getHeader(requestParams),
-            body: getBody(requestParams),
+            body: getBody(requestParams, itf.bodyOption),
             url: {
               raw: `{{url}}${relativeUrl}`,
               host: '{{url}}',
@@ -63,7 +64,7 @@ export default class PostmanService {
             },
             description: itf.description,
           },
-          response: responseParams.map(x => ({ key: x.name, value: x.value })),
+          response: getResponse(responseParams)
         }
         modItem.item.push(itfItem)
       }
@@ -73,11 +74,46 @@ export default class PostmanService {
   }
 }
 
-function getBody(pList: Property[]) {
-  return {
-    "mode": "formdata" as "formdata",
-    "formdata": pList.filter(x => x.pos === REQUEST_PARAMS_TYPE.BODY_PARAMS)
-      .map(x => ({ key: x.name, value: x.value, description: x.description, type: "text" as "text"})),
+function getResponse(response: any) {
+  const templateData = tree.ArrayToTreeToTemplateToData(response)
+  return templateData
+}
+
+const requestStrategy: any = {
+  raw: (pList: Property[]) => {
+    const templateData = tree.ArrayToTreeToTemplateToData(pList)
+    return {
+      "mode": 'raw',
+      "raw": JSON.stringify(templateData),
+      "options": {
+        "raw": {
+          "language": 'json'
+        }
+      }
+    }
+  },
+  formdata: (pList: Property[]) => {
+    return {
+      "mode": 'formdata' as 'formdata',
+      "formdata": pList.map((x: Property) => ({
+          key: x.name,
+          value: x.value,
+          description: x.description,
+          type: 'text' as 'text'
+        }))
+    }
+  }
+}
+
+function getBody(pList: Property[], bodyOption: string = '') {
+  if (bodyOption) {
+    bodyOption = bodyOption.toLowerCase()
+  }
+  const _pList = pList.filter((x: Property) => x.pos === REQUEST_PARAMS_TYPE.BODY_PARAMS)
+  if (_pList && requestStrategy[bodyOption] && typeof requestStrategy[bodyOption] === 'function') {
+    return requestStrategy[bodyOption](_pList)
+  } else {
+    return requestStrategy['formdata'](_pList)
   }
 }
 

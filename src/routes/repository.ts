@@ -939,6 +939,12 @@ router.post('/properties/update', isLoggedIn, async (ctx, next) => {
   if (summary.description) {
     itf.description = summary.description
   }
+  if (summary.bodyOption) {
+    itf.bodyOption = summary.bodyOption.toLowerCase()
+  }
+  if (summary.requestParamsType) {
+    itf.requestParamsType = summary.requestParamsType.toLowerCase()
+  }
 
   await itf.save()
 
