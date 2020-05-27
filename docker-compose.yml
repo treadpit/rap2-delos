@@ -6,7 +6,7 @@ version: "3"
 services:
   # frontend
   dolores:
-    image: rapteam/rap2-dolores:latest
+    image: drfu/jdfe-dolores:latest
     container_name: rap2_dolores
     ports:
       #冒号前可以自定义前端端口号，冒号后不要动
