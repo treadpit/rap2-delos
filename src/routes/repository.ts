@@ -7,7 +7,9 @@ import Tree from './utils/tree'
 import { AccessUtils, ACCESS_TYPE } from './utils/access'
 import * as Consts from './utils/const'
 import RedisService, { CACHE_KEY } from '../service/redis'
+import RepositoryService from '../service/repository'
 import MigrateService from '../service/migrate'
+import OrganizationService from '../service/organization'
 import { Op } from 'sequelize'
 import { isLoggedIn } from './base'
 
@@ -45,7 +47,7 @@ router.get('/repository/list', async (ctx) => {
   let { name, user, organization } = ctx.query
 
   if (+organization > 0) {
-    const access = await AccessUtils.canUserAccess(ACCESS_TYPE.ORGANIZATION, ctx.session.id, organization)
+    const access = await AccessUtils.canUserAccess(ACCESS_TYPE.ORGANIZATION_GET, ctx.session.id, organization)
 
     if (access === false) {
       ctx.body = {
@@ -72,10 +74,11 @@ router.get('/repository/list', async (ctx) => {
     include: [
       QueryInclude.Creator,
       QueryInclude.Owner,
-      QueryInclude.Locker,
-    ],
-  } as any)
-  let pagination = new Pagination(total, ctx.query.cursor || 1, ctx.query.limit || 100)
+      QueryInclude.Locker
+    ]
+  })
+  let limit = Math.min(ctx.query.limit ?? 10, 100)
+  let pagination = new Pagination(total, ctx.query.cursor || 1, limit)
   let repositories = await Repository.findAll({
     where,
     attributes: { exclude: [] },
@@ -89,11 +92,22 @@ router.get('/repository/list', async (ctx) => {
     ],
     offset: pagination.start,
     limit: pagination.limit,
-    order: [['updatedAt', 'DESC']],
-  } as any)
+    order: [['updatedAt', 'DESC']]
+  })
+  let repoData = await Promise.all(repositories.map(async (repo) => {
+    const canUserEdit = await AccessUtils.canUserAccess(
+      ACCESS_TYPE.REPOSITORY_SET,
+      ctx.session.id,
+      repo.id,
+    )
+    return {
+      ...repo.toJSON(),
+      canUserEdit
+    }
+  }))
   ctx.body = {
     isOk: true,
-    data: repositories,
+    data: repoData,
     pagination: pagination,
   }
 })
@@ -111,8 +125,7 @@ router.get('/repository/owned', isLoggedIn, async (ctx) => {
   }
 
   let auth: User = await User.findByPk(ctx.query.user || ctx.session.id)
-  // let total = await auth.countOwnedRepositories({ where })
-  // let pagination = new Pagination(total, ctx.query.cursor || 1, ctx.query.limit || 100)
+
   let repositories = await auth.$get('ownedRepositories', {
     where,
     include: [
@@ -123,12 +136,16 @@ router.get('/repository/owned', isLoggedIn, async (ctx) => {
       QueryInclude.Organization,
       QueryInclude.Collaborators,
     ],
-    // offset: pagination.start,
-    // limit: pagination.limit,
-    order: [['updatedAt', 'DESC']],
+    order: [['updatedAt', 'DESC']]
+  })
+  let repoData = repositories.map(repo => {
+    return {
+      ...repo.toJSON(),
+      canUserEdit: true
+    }
   })
   ctx.body = {
-    data: repositories,
+    data: repoData,
     pagination: undefined,
   }
 })
@@ -146,8 +163,6 @@ router.get('/repository/joined', isLoggedIn, async (ctx) => {
   }
 
   let auth = await User.findByPk(ctx.query.user || ctx.session.id)
-  // let total = await auth.countJoinedRepositories({ where })
-  // let pagination = new Pagination(total, ctx.query.cursor || 1, ctx.query.limit || 100)
   let repositories = await auth.$get('joinedRepositories', {
     where,
     attributes: { exclude: [] },
@@ -159,19 +174,23 @@ router.get('/repository/joined', isLoggedIn, async (ctx) => {
       QueryInclude.Organization,
       QueryInclude.Collaborators,
     ],
-    // offset: pagination.start,
-    // limit: pagination.limit,
-    order: [['updatedAt', 'DESC']],
+    order: [['updatedAt', 'DESC']]
+  })
+  let repoData = repositories.map(repo => {
+    return {
+      ...repo.toJSON(),
+      canUserEdit: true,
+    }
   })
   ctx.body = {
-    data: repositories,
-    pagination: undefined,
+    data: repoData,
+    pagination: undefined
   }
 })
 
 router.get('/repository/get', async (ctx) => {
   const access = await AccessUtils.canUserAccess(
-    ACCESS_TYPE.REPOSITORY,
+    ACCESS_TYPE.REPOSITORY_GET,
     ctx.session.id,
     ctx.query.id,
     ctx.query.token
@@ -183,49 +202,53 @@ router.get('/repository/get', async (ctx) => {
     }
     return
   }
-  const tryCache = await RedisService.getCache(CACHE_KEY.REPOSITORY_GET, ctx.query.id)
-  let repository: Partial<Repository>
-  if (tryCache) {
-    repository = JSON.parse(tryCache)
-  } else {
-    // 分开查询减少
-    let [repositoryOmitModules, repositoryModules] = await Promise.all([
-      Repository.findByPk(ctx.query.id, {
-        attributes: { exclude: [] },
-        include: [
-          QueryInclude.Creator,
-          QueryInclude.Owner,
-          QueryInclude.Locker,
-          QueryInclude.Members,
-          QueryInclude.Organization,
-          QueryInclude.Collaborators
-        ]
-      }),
-      Repository.findByPk(ctx.query.id, {
-        attributes: { exclude: [] },
-        include: [QueryInclude.RepositoryHierarchy],
-        order: [
-          [{ model: Module, as: "modules" }, "priority", "asc"],
-          [
-            { model: Module, as: "modules" },
-            { model: Interface, as: "interfaces" },
-            "priority",
-            "asc"
-          ]
-        ]
-      })
-    ])
-    repository = {
-      ...repositoryOmitModules.toJSON(),
-      ...repositoryModules.toJSON()
-    }
-    await RedisService.setCache(
-      CACHE_KEY.REPOSITORY_GET,
-      JSON.stringify(repository),
-      ctx.query.id
-    )
-    await RedisService.setCache(CACHE_KEY.REPOSITORY_GET, JSON.stringify(repository), ctx.query.id)
+  const excludeProperty = ctx.query.excludeProperty || false
+  const canUserEdit = await AccessUtils.canUserAccess(
+    ACCESS_TYPE.REPOSITORY_SET,
+    ctx.session.id,
+    ctx.query.id,
+    ctx.query.token,
+  )
+  let repository: Partial<Repository> & {
+    canUserEdit: boolean
   }
+  // 分开查询减少查询时间
+  let [repositoryOmitModules, repositoryModules] = await Promise.all([
+    Repository.findByPk(ctx.query.id, {
+      attributes: { exclude: [] },
+      include: [
+        QueryInclude.Creator,
+        QueryInclude.Owner,
+        QueryInclude.Locker,
+        QueryInclude.Members,
+        QueryInclude.Organization,
+        QueryInclude.Collaborators,
+      ],
+    }),
+    Repository.findByPk(ctx.query.id, {
+      attributes: { exclude: [] },
+      include: [
+        excludeProperty
+          ? QueryInclude.RepositoryHierarchyExcludeProperty
+          : QueryInclude.RepositoryHierarchy,
+      ],
+      order: [
+        [{ model: Module, as: 'modules' }, 'priority', 'asc'],
+        [
+          { model: Module, as: 'modules' },
+          { model: Interface, as: 'interfaces' },
+          'priority',
+          'asc',
+        ],
+      ],
+    }),
+  ])
+  repository = {
+    ...repositoryOmitModules.toJSON(),
+    ...repositoryModules.toJSON(),
+    canUserEdit
+  }
+
   ctx.body = {
     data: repository,
   }
@@ -273,14 +296,28 @@ router.post('/repository/create', isLoggedIn, async (ctx, next) => {
 
 router.post('/repository/update', isLoggedIn, async (ctx, next) => {
   const body = Object.assign({}, ctx.request.body)
-  if (!await AccessUtils.canUserAccess(ACCESS_TYPE.REPOSITORY, ctx.session.id, body.id)) {
+  if (!await AccessUtils.canUserAccess(ACCESS_TYPE.REPOSITORY_SET, ctx.session.id, body.id)) {
     ctx.body = Consts.COMMON_ERROR_RES.ACCESS_DENY
     return
   }
+  let repo = await Repository.findByPk(body.id)
+
+  // 更改团队需要校验是否有当前团队和目标团队的权限
+  if (body.organizationId != repo.organizationId) {
+
+    if (body.organizationId && !(await OrganizationService.canUserAccessOrganization(ctx.session.id, body.organizationId))) {
+      ctx.body = '没有当前团队的权限'
+      return
+    }
+
+    if (repo.organizationId && !(await OrganizationService.canUserAccessOrganization(ctx.session.id, repo.organizationId))) {
+      ctx.body = '没有目标团队的权限'
+      return
+    }
+  }
+
   delete body.creatorId
-  // DONE 2.2 支持转移仓库
-  // delete body.ownerId
-  delete body.organizationId
+
   let result = await Repository.update(body, { where: { id: body.id } })
   if (body.memberIds) {
     let reloaded = await Repository.findByPk(body.id, {
@@ -341,7 +378,7 @@ router.post('/repository/update', isLoggedIn, async (ctx, next) => {
 
 router.post('/repository/transfer', isLoggedIn, async (ctx) => {
   let { id, ownerId, organizationId } = ctx.request.body
-  if (!await AccessUtils.canUserAccess(ACCESS_TYPE.ORGANIZATION, ctx.session.id, organizationId)) {
+  if (!await AccessUtils.canUserAccess(ACCESS_TYPE.ORGANIZATION_SET, ctx.session.id, organizationId)) {
     ctx.body = Consts.COMMON_ERROR_RES.ACCESS_DENY
     return
   }
@@ -359,7 +396,7 @@ router.post('/repository/transfer', isLoggedIn, async (ctx) => {
 
 router.get('/repository/remove', isLoggedIn, async (ctx, next) => {
   const id = +ctx.query.id
-  if (!await AccessUtils.canUserAccess(ACCESS_TYPE.REPOSITORY, ctx.session.id, id)) {
+  if (!await AccessUtils.canUserAccess(ACCESS_TYPE.REPOSITORY_SET, ctx.session.id, id)) {
     ctx.body = Consts.COMMON_ERROR_RES.ACCESS_DENY
     return
   }
@@ -384,7 +421,7 @@ router.get('/repository/remove', isLoggedIn, async (ctx, next) => {
 // TOEO 锁定/解锁仓库 待测试
 router.post('/repository/lock', isLoggedIn, async (ctx) => {
   const id = +ctx.request.body.id
-  if (!await AccessUtils.canUserAccess(ACCESS_TYPE.REPOSITORY, ctx.session.id, id)) {
+  if (!await AccessUtils.canUserAccess(ACCESS_TYPE.REPOSITORY_SET, ctx.session.id, id)) {
     ctx.body = Consts.COMMON_ERROR_RES.ACCESS_DENY
     return
   }
@@ -462,7 +499,7 @@ router.post('/module/create', isLoggedIn, async (ctx, next) => {
 
 router.post('/module/update', isLoggedIn, async (ctx, next) => {
   const { id, name, description } = ctx.request.body
-  if (!await AccessUtils.canUserAccess(ACCESS_TYPE.MODULE, ctx.session.id, +id)) {
+  if (!await AccessUtils.canUserAccess(ACCESS_TYPE.MODULE_SET, ctx.session.id, +id)) {
     ctx.body = Consts.COMMON_ERROR_RES.ACCESS_DENY
     return
   }
@@ -488,9 +525,27 @@ router.post('/module/update', isLoggedIn, async (ctx, next) => {
   })
 })
 
+router.post('/module/move', isLoggedIn, async ctx => {
+  const { modId, op } = ctx.request.body
+  const repositoryId = ctx.request.body.repositoryId
+
+  if (!(await RepositoryService.canUserMoveModule(ctx.session.id, modId, repositoryId))) {
+    ctx.body = Consts.COMMON_ERROR_RES.ACCESS_DENY
+    return
+  }
+
+  await RepositoryService.moveModule(op, modId, repositoryId)
+
+  ctx.body = {
+    data: {
+      isOk: true,
+    },
+  }
+})
+
 router.get('/module/remove', isLoggedIn, async (ctx, next) => {
   let { id } = ctx.query
-  if (!await AccessUtils.canUserAccess(ACCESS_TYPE.MODULE, ctx.session.id, +id)) {
+  if (!await AccessUtils.canUserAccess(ACCESS_TYPE.MODULE_SET, ctx.session.id, +id)) {
     ctx.body = Consts.COMMON_ERROR_RES.ACCESS_DENY
     return
   }
@@ -539,7 +594,7 @@ router.get('/interface/count', async (ctx) => {
 router.get('/interface/list', async (ctx) => {
   let where: any = {}
   let { repositoryId, moduleId, name } = ctx.query
-  if (!await AccessUtils.canUserAccess(ACCESS_TYPE.REPOSITORY, ctx.session.id, +repositoryId)) {
+  if (!await AccessUtils.canUserAccess(ACCESS_TYPE.REPOSITORY_GET, ctx.session.id, +repositoryId)) {
     ctx.body = Consts.COMMON_ERROR_RES.ACCESS_DENY
     return
   }
@@ -563,7 +618,7 @@ router.get('/repository/defaultVal/get/:id', async (ctx) => {
 
 router.post('/repository/defaultVal/update/:id', async (ctx) => {
   const repositoryId: number = ctx.params.id
-  if (!await AccessUtils.canUserAccess(ACCESS_TYPE.REPOSITORY, ctx.session.id, repositoryId)) {
+  if (!await AccessUtils.canUserAccess(ACCESS_TYPE.REPOSITORY_SET, ctx.session.id, repositoryId)) {
     ctx.body = Consts.COMMON_ERROR_RES.ACCESS_DENY
     return
   }
@@ -612,7 +667,7 @@ router.get('/interface/get', async (ctx) => {
 
   if (
     !(await AccessUtils.canUserAccess(
-      ACCESS_TYPE.REPOSITORY,
+      ACCESS_TYPE.REPOSITORY_GET,
       ctx.session.id,
       itf.repositoryId
     ))
@@ -623,14 +678,20 @@ router.get('/interface/get', async (ctx) => {
 
   const itfJSON: { [k: string]: any } = itf.toJSON()
 
+  let properties: any[] = await Property.findAll({
+    attributes: { exclude: [] },
+    where: { interfaceId: itf.id },
+  })
+
+  properties = properties.map((item: any) => item.toJSON())
+  itfJSON['properties'] = properties
+
   let scopes = ['request', 'response']
   for (let i = 0; i < scopes.length; i++) {
-    let properties: any = await Property.findAll({
-      attributes: { exclude: [] },
-      where: { interfaceId: itf.id, scope: scopes[i] }
-    })
-    properties = properties.map((item: any) => item.toJSON())
-    itfJSON[scopes[i] + 'Properties'] = Tree.ArrayToTree(properties).children
+    let scopeProperties = properties
+      .filter(p => p.scope === scopes[i])
+      .map((item: any) => ({ ...item }))
+    itfJSON[scopes[i] + 'Properties'] = Tree.ArrayToTree(scopeProperties).children
   }
 
   ctx.type = 'json'
@@ -662,7 +723,7 @@ router.post('/interface/create', isLoggedIn, async (ctx, next) => {
 
 router.post('/interface/update', isLoggedIn, async (ctx, next) => {
   let body = ctx.request.body
-  if (!await AccessUtils.canUserAccess(ACCESS_TYPE.INTERFACE, ctx.session.id, +body.id)) {
+  if (!await AccessUtils.canUserAccess(ACCESS_TYPE.INTERFACE_SET, ctx.session.id, +body.id)) {
     ctx.body = Consts.COMMON_ERROR_RES.ACCESS_DENY
     return
   }
@@ -687,67 +748,27 @@ router.post('/interface/update', isLoggedIn, async (ctx, next) => {
   })
 })
 
-router.post('/interface/move', isLoggedIn, async (ctx) => {
-  const OP_MOVE = 1
-  const OP_COPY = 2
+router.post('/interface/move', isLoggedIn, async ctx => {
   const { modId, itfId, op } = ctx.request.body
   const itf = await Interface.findByPk(itfId)
-  if (!await AccessUtils.canUserAccess(ACCESS_TYPE.INTERFACE, ctx.session.id, itfId)) {
+  const repositoryId = ctx.request.body.repositoryId || itf.repositoryId
+  if (!(await RepositoryService.canUserMoveInterface(ctx.session.id, itfId, repositoryId, modId))) {
     ctx.body = Consts.COMMON_ERROR_RES.ACCESS_DENY
     return
   }
-  if (op === OP_MOVE) {
-    itf.moduleId = modId
-    await Property.update({
-      moduleId: modId,
-    }, {
-        where: {
-          interfaceId: itf.id,
-        }
-      })
-    await itf.save()
-  } else if (op === OP_COPY) {
-    const { id, name, ...otherProps } = itf.toJSON() as Interface
-    const newItf = await Interface.create({
-      name: name + '副本',
-      ...otherProps,
-      moduleId: modId,
-    })
 
-    const properties = await Property.findAll({
-      where: {
-        interfaceId: itf.id,
-      },
-      order: [['parentId', 'asc']],
-    })
-    // 解决parentId丢失的问题
-    let idMap = {}
-    for (const property of properties) {
-      const { id, parentId, ...props } = property.toJSON() as Property
-      // @ts-ignore
-      const newParentId = idMap[parentId + ''] ? idMap[parentId + ''] : -1
-      const newProperty = await Property.create({
-        ...props,
-        interfaceId: newItf.id,
-        parentId: newParentId,
-        moduleId: modId,
-      })
+  await RepositoryService.moveInterface(op, itfId, repositoryId, modId)
 
-      // @ts-ignore
-      idMap[id + ''] = newProperty.id
-    }
-
-  }
   ctx.body = {
     data: {
       isOk: true,
-    }
+    },
   }
 })
 
 router.get('/interface/remove', async (ctx, next) => {
   let { id } = ctx.query
-  if (!await AccessUtils.canUserAccess(ACCESS_TYPE.INTERFACE, ctx.session.id, +id)) {
+  if (!await AccessUtils.canUserAccess(ACCESS_TYPE.INTERFACE_SET, ctx.session.id, +id)) {
     ctx.body = Consts.COMMON_ERROR_RES.ACCESS_DENY
     return
   }
@@ -786,7 +807,7 @@ router.post('/interface/lock', async (ctx, next) => {
   }
 
   let { id } = ctx.request.body
-  if (!await AccessUtils.canUserAccess(ACCESS_TYPE.INTERFACE, ctx.session.id, +id)) {
+  if (!await AccessUtils.canUserAccess(ACCESS_TYPE.INTERFACE_SET, ctx.session.id, +id)) {
     ctx.body = Consts.COMMON_ERROR_RES.ACCESS_DENY
     return
   }
@@ -823,7 +844,7 @@ router.post('/interface/unlock', async (ctx) => {
   }
 
   let { id } = ctx.request.body
-  if (!await AccessUtils.canUserAccess(ACCESS_TYPE.INTERFACE, ctx.session.id, +id)) {
+  if (!await AccessUtils.canUserAccess(ACCESS_TYPE.INTERFACE_SET, ctx.session.id, +id)) {
     ctx.body = Consts.COMMON_ERROR_RES.ACCESS_DENY
     return
   }
@@ -922,7 +943,7 @@ router.post('/properties/update', isLoggedIn, async (ctx, next) => {
   properties = Array.isArray(properties) ? properties : [properties]
 
   let itf = await Interface.findByPk(itfId)
-  if (!await AccessUtils.canUserAccess(ACCESS_TYPE.INTERFACE, ctx.session.id, itfId)) {
+  if (!await AccessUtils.canUserAccess(ACCESS_TYPE.INTERFACE_SET, ctx.session.id, itfId)) {
     ctx.body = Consts.COMMON_ERROR_RES.ACCESS_DENY
     return
   }
@@ -964,6 +985,7 @@ router.post('/properties/update', isLoggedIn, async (ctx, next) => {
       interfaceId: itfId
     }
   })
+
   // 更新已存在的属性
   for (let item of existingProperties) {
     let affected = await Property.update(item, {
@@ -1017,7 +1039,7 @@ router.post('/properties/update', isLoggedIn, async (ctx, next) => {
 
 router.get('/property/remove', isLoggedIn, async (ctx) => {
   let { id } = ctx.query
-  if (!await AccessUtils.canUserAccess(ACCESS_TYPE.PROPERTY, ctx.session.id, id)) {
+  if (!await AccessUtils.canUserAccess(ACCESS_TYPE.PROPERTY_SET, ctx.session.id, id)) {
     ctx.body = Consts.COMMON_ERROR_RES.ACCESS_DENY
     return
   }
@@ -1030,7 +1052,7 @@ router.get('/property/remove', isLoggedIn, async (ctx) => {
 
 router.post('/repository/import', isLoggedIn, async (ctx) => {
   const { docUrl, orgId } = ctx.request.body
-  if (!await AccessUtils.canUserAccess(ACCESS_TYPE.ORGANIZATION, ctx.session.id, orgId)) {
+  if (!await AccessUtils.canUserAccess(ACCESS_TYPE.ORGANIZATION_SET, ctx.session.id, orgId)) {
     ctx.body = Consts.COMMON_ERROR_RES.ACCESS_DENY
     return
   }
@@ -1042,4 +1064,49 @@ router.post('/repository/import', isLoggedIn, async (ctx) => {
       id: 1,
     }
   }
+})
+
+router.post('/repository/importswagger', isLoggedIn, async (ctx) => {
+  const { orgId, repositoryId, swagger, version = 1, mode = 'manual'} = ctx.request.body
+  // 权限判断
+  if (!await AccessUtils.canUserAccess(ACCESS_TYPE.REPOSITORY_SET, ctx.session.id, repositoryId)) {
+    ctx.body = Consts.COMMON_ERROR_RES.ACCESS_DENY
+    return
+  }
+
+  const result = await MigrateService.importRepoFromSwaggerDocUrl(orgId, ctx.session.id, swagger, version, mode, repositoryId)
+
+  ctx.body = {
+    isOk: result.code,
+    message: result.code === 'success' ? '导入成功' : '导入失败',
+    repository: {
+      id: 1,
+    }
+  }
+})
+
+router.post('/repository/importJSON', isLoggedIn , async ctx => {
+  const { data } = ctx.request.body
+
+  if (!(await AccessUtils.canUserAccess(ACCESS_TYPE.REPOSITORY_SET, ctx.session.id, data.id))) {
+    ctx.body = Consts.COMMON_ERROR_RES.ACCESS_DENY
+    return
+  }
+  try {
+    await MigrateService.importRepoFromJSON(data, ctx.session.id)
+    ctx.body = {
+      isOk: true,
+      repository: {
+        id: data.id,
+      },
+    }
+  } catch (error) {
+    ctx.body = {
+      isOk: false,
+      message: '服务器错误，导入失败'
+    }
+    throw(error)
+  }
+
+
 })

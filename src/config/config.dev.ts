@@ -1,7 +1,7 @@
-import { IConfigOptions } from "../types"
+import { IConfigOptions } from '../types'
 
 const config: IConfigOptions = {
-  version: 'v2.8.0',
+  version: 'v2.9.0',
   serve: {
     port: (process.env.SERVE_PORT && parseInt(process.env.SERVE_PORT)) || 8080,
     path: '',
@@ -18,7 +18,7 @@ const config: IConfigOptions = {
     password: process.env.MYSQL_PASSWD ?? '',
     database: process.env.MYSQL_SCHEMA ?? 'RAP2_DELOS_APP',
     pool: {
-      max: 5,
+      max: 10,
       min: 0,
       idle: 10000,
     },
@@ -29,17 +29,15 @@ const config: IConfigOptions = {
   },
   redis: {},
   mail: {
-    host: 'smtp-mail.outlook.com',
-    port: 587,
-    secure: false,
+    host: process.env.MAIL_HOST ?? 'smtp.aliyun.com',
+    port: process.env.MAIL_PORT ?? 465,
+    secure: process.env.MAIL_SECURE ?? true,
     auth: {
-      user: 'rap2_notify@outlook.com',
-      pass: ''
-    }
+      user: process.env.MAIL_USER ?? 'rap2org@service.alibaba.com',
+      pass: process.env.MAIL_PASS ?? '',
+    },
   },
-  mailSender: 'rap2_notify@outlook.com',
-
-
+  mailSender: process.env.MAIL_SENDER ?? 'rap2org@service.alibaba.com',
 }
 
 export default config
