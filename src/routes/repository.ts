@@ -960,13 +960,8 @@ router.post('/properties/update', isLoggedIn, async (ctx, next) => {
   if (summary.description) {
     itf.description = summary.description
   }
-  if (summary.bodyOption) {
-    itf.bodyOption = summary.bodyOption.toLowerCase()
-  }
-  if (summary.requestParamsType) {
-    itf.requestParamsType = summary.requestParamsType.toLowerCase()
-  }
-
+  itf.bodyOption = summary.bodyOption.toLowerCase() || 'raw'
+  itf.requestParamsType = summary.requestParamsType.toLowerCase() || 'body_params'
   await itf.save()
 
   // 删除不在更新列表中的属性
