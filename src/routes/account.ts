@@ -59,14 +59,13 @@ router.get('/account/list', isLoggedIn, async (ctx) => {
   let total = await User.count(options)
   let pagination = new Pagination(total, ctx.query.cursor || 1, ctx.query.limit || 10)
   ctx.body = {
-    data: await User.findAll(Object.assign(options, {
+    data: await User.findAll({
+      ...options,
       attributes: ['id', 'fullname', 'email'],
       offset: pagination.start,
       limit: pagination.limit,
-      order: [
-        ['id', 'DESC'],
-      ],
-    })),
+      order: [['id', 'DESC']],
+    }),
     pagination: pagination,
   }
 })

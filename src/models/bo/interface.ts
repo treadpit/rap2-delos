@@ -91,6 +91,12 @@ export default class Interface extends Model<Interface> {
   @Column
   repositoryId: number
 
+  @Column
+  bodyOption: string
+
+  @Column
+  requestParamsType: string
+
   @BelongsTo(() => User, 'creatorId')
   creator: User
 
@@ -106,9 +112,4 @@ export default class Interface extends Model<Interface> {
   @HasMany(() => Property, 'interfaceId')
   properties: Property[]
 
-  @Column
-  bodyOption: string
-
-  @Column
-  requestParamsType: string
 }

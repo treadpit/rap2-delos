@@ -52,7 +52,18 @@ router.get('/export/markdown', async ctx => {
   if (!(repoId > 0)) {
     ctx.data = COMMON_ERROR_RES.ERROR_PARAMS
   }
+  const repository = await Repository.findByPk(repoId)
   ctx.body = await MarkdownService.export(repoId, ctx.query.origin)
+  ctx.set(
+    'Content-Disposition',
+    `attachment; filename="RAP-${encodeURI(
+      repository.name
+    )}-${repoId}-${encodeURI('POSTMAN')}-${moment().format('YYYYMMDDHHmmss')}.md"`
+  )
+  ctx.set(
+    'Content-type',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  )
 })
 
 router.get('/export/docx', async ctx => {

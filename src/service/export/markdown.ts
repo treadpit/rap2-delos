@@ -22,7 +22,7 @@ const arrayToTree = (list: any[]): any => {
   return getValue({id: -1})
 }
 
-export default class PostmanService {
+export default class MarkdownService {
   public static async export(repositoryId: number, origin: string): Promise<string> {
     const repo = await Repository.findByPk(repositoryId, {
       include: [
